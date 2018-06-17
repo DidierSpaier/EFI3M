@@ -22,31 +22,6 @@
 
 # Last updated on Sunday 17 June 2018 21.46 Paris time.
 
-# Changes since Sunday 17 June 2018 01.11 Paris time.
-# Fix logic of make_boot_menu at first run to avoid an endless loop
-# Bug was introduced in last update
-# Allow to replace the boot menu installed by this script run from
-# another system on the same machine.
-# fix the "grub-mkimage" command so that it really works on
-# distributions that name it grub2-mkimage
-
-# Changes since Friday 16 June 2018 00:28 Paris time:
-# Bug fix: keep the boot order previously set by the user after next
-# execution of the script.
-# Bug fix: do not include /efi image output by this script in the menu
-# (to be re-checked)
-# Bug fix: really remove stiff previously installed before making a new
-# internal installation.
-
-# Changes since Sunday 10 June 2018:
-# In install_on_system_ESP and install_on_USB_stick, run
-# build_boot_loader unconditionally
-# Optionally play a sound at startup, a tune of n sounds when starting
-# the boot entry number n, and specific tunes for reboot and halt.
-# Allow the user to set the boot delay in a range 5-60 seconds and store
-# these settings in /etc.
-# if grub-mkimage is not found, look for grub2-mkimage
-
 # TODO:
 # add as "super-fallback" /EFI/startup.nsh if absent?
 # Internationalize.
