@@ -49,7 +49,7 @@ Current menu (custom labels on the second line):
    Label: GRUB menu from Fedora 28
 
 Type:
-a number between 1 and 4 to select a boot entry then set
+a number between 1 and 11 to select a boot entry then set
   the label used to display it in the boot menu,
 D to set the Delay before auto boot,
 M for a Mute menu, S for a menu with Sound,
