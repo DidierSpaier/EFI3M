@@ -70,6 +70,8 @@ EFI3M has been tested on Slint, Slackware, Salix, Debian, Ubuntu, Fedora, openSU
 
 It should run in any Linux system including GRUB (I mean GRUB2).
 
+Caveat: chainloading to boot loaders written by elilo (like those found in Slackware and derivatives) needs grub-2.02, this doen't work with grub-2.00.
+
 For questions or issues, send en email to the author:
 didier~at~slint~dot~fr.
 
