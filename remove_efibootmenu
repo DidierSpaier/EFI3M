@@ -1,0 +1,152 @@
+#!/bin/sh
+# Copyright 2018 Didier Spaier <didier~at~slint~dot~fr>
+#
+# All rights reserved.
+#
+# Redistribution and use of this script, with or without modification, is
+# permitted provided that the following conditions are met:
+#
+# 1. Redistributions of this script must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#
+#  THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED
+#  WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO
+#  EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+#  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+#  OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+#  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+#  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+#  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# Updated on Thu, 12 Jul 2018 23:55:35 +0200
+
+
+one_space() {
+	echo "$1"|sed "s/ \{1,\}/ /g"
+}
+
+to_lower() {
+echo "$1"|tr '[:upper:]' '[:lower:]'
+}
+
+set_mountpoint() {
+	ESP_NAME=$(one_space "$(lsblk -l -o uuid,name)"|grep $UUID|cut -d" " -f 2)
+	MOUNTPOINT=$(one_space "$(df -h)"|grep /dev/$ESP_NAME|cut -d" " -f 6)
+	ESP=/dev/$ESP_NAME
+	MOUNTED=y
+	if [ "$MOUNTPOINT" = "" ]; then
+		MOUNTPOINT=$MNT
+		mount $ESP $MNT
+		MOUNTED=n
+	fi 
+}
+
+remove_previous_files() {
+	# Very old versioin without /var/efibootmenuinstall
+	if [ -d /boot/efi/EFI/efibootmenu ]; then
+		rm -rf /boot/efi/EFI/efibootmenu
+	fi
+	if [ ! -f /var/efibootmenuinstall ]; then
+		return
+	fi
+	while read UUID EFIPATH; do
+		set_mountpoint
+		EFIDIR=$(dirname $EFIPATH)
+		if [ ! -d $MOUNTPOINT$EFIDIR ]; then
+			# Don't try to cd to a directory that have been removed
+			# after previous installation in system ESP
+			continue
+		fi
+		( cd $MOUNTPOINT$EFIDIR
+		if [ -f efibootmenu.md5 ]; then
+			if md5sum -c --quiet efibootmenu.md5; then
+				rm BOOTx64.EFI
+				rm efibootmenu.md5
+			fi
+		fi
+		if [ -f efibootgrub.md5 ]; then
+			if md5sum -c --quiet efibootgrub.md5; then
+				rm grub.cfg
+				rm efibootgrub.md5
+			fi
+		fi
+		)
+		if [ "$(ls -A $MOUNTPOINT$EFIDIR)" = "" ]; then
+			rmdir $MOUNTPOINT$EFIDIR
+		fi
+		if [ "$MOUNTED" = "n" ]; then
+			umount $MNT
+		fi
+	done < /var/efibootmenuinstall
+	rm -f /boot/efimultibootmenux64.efi
+	rm /var/efibootmenuinstall
+	rm -f /var/efibootmenu
+	rm -rf /etc/efibootmenu
+}
+
+display_install_path() {
+	if [ "$1" = "main" ]; then
+		SHOW=$(grep efibootmenu /var/efibootmenuinstall)
+	else
+		SHOW=$(grep /EFI/BOOT /var/efibootmenuinstall)
+	fi
+	UUID=$(echo $SHOW|cut -d" " -f1)
+	ESP_PATH=$(echo $SHOW|cut -d" " -f2)
+	PARTITION=$(one_space "$(lsblk -l -o UUID,NAME)"|grep $UUID|cut -d" " -f2)
+	echo "/dev/$PARTITION as ${ESP_PATH}.
+"
+}
+
+list_the_ESP() {
+	# List the accessible EFI system partitions or ESPs
+	lsblk -l -o name,parttype,uuid,pkname|\
+	grep -i -F -e "$ESPPARTTYPE" -e "$OSTYPE"|sed "s/ \{1,\}/ /g" > $ESPLIST
+	if [ ! -s $ESPLIST ]; then # No EFI partitions
+		echo "No EFI partition found, game over."
+		return
+	fi
+	
+}
+
+house_cleaning() {
+	clear
+	echo "Please wait..."
+	list_the_ESP
+	# Output one line per ESP with these fields:
+	# name parttype uuid pkname
+	# pkname is the name of the device (parent of the partition)
+	remove_previous_files
+}
+
+the_end() {
+	rm -f $ESPLIST
+	rmdir $MNT
+	rmdir $TMP
+	clear
+	echo "
+All done.
+You may now want to run EFI3M."
+}
+
+if [ $(id -u) -ne 0 ]; then
+	echo "Only root may run this script."
+	exit
+fi
+if [ ! -d /sys/firmware/efi ]; then
+	echo "EFI booting is not enabled, game over."
+	exit
+fi
+if [ ! -f /var/efibootmenuinstall ] && [ ! -d /boot/efi/EFI/efibootmenu ]; then
+	echo "No old version found".
+	exit
+fi
+echo "This script will remove all files installed by an old version of EFI3M."
+read -p "Ready to proceed [y/N]? " dummy
+if [ ! "$(to_lower $dummy)" = "y" ]; then
+	echo "Nothing done."
+	exit
+fi
+remove_previous_files
+the_end
