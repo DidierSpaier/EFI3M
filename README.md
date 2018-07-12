@@ -68,7 +68,7 @@ the boot entry number n, and specific tunes for reboot and halt.
 
 EFI3M has been tested on Slint, Slackware, Salix, Debian, Ubuntu, Fedora, openSUSE and Arch.
 
-It should run in any Linux system including grub version at least 2.02 with x86_64.efi modules and efibotmgr
+It should run in any Linux system including grub version at least 2.02 with x86_64.efi modules and efibootmgr
 
 For questions or issues, send en email to the author:
 didier~at~slint~dot~fr.
