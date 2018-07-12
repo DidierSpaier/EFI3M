@@ -20,11 +20,15 @@
 #  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 #  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# Last updated on Sunday 17 June 2018 21.46 Paris time.
-
-# TODO:
-# add as "super-fallback" /EFI/startup.nsh if absent?
+# Updated on Thu, 12 Jul 2018 00:42:09 +0200
+# Add as "super-fallback" /EFI/startup.nsh if absent?
 # Internationalize.
+# Provide a pre-built EFI image
+# Ship in an initramfs to make a real rescue stick.
+# Use a rEFInd EFI image instead of a GRUB one.
+# Allow to use an already formatted USB stick.
+# Do not accept to write in the already mounted ESP of an USB stick and
+# warn the user then.
 
 # This script provides boot menu entries for all accessible EFI OS
 # loaders.
@@ -36,38 +40,37 @@
 # location and optionally as a fall back as /BOOT/EFI/BOOTx64.EFI
 # Install the EFI application in an USB stick.
 # Make an entry for the EFI application menu in the firmware.
-# Allow the user to hide menu entries and edit and change the order of
-# their displayed labels.
+# Allow the user to hide menu entries, edit and change the order of
+# their displayed labels, make the menu sound or mute.
 # When installing in a mass storage device, remove the EFI applications
 # previously installed by this script.
 
 # Limitations: this script only handles EFI images accessible at time of
 # running it, stored in an ESP with a FAT file system, with a partition
 # table labeled either msdos or gpt.
-# It can need adaptation to Linux distribution not based on Slackware.
 # It can't distinguish with certainty EFI boot loaders from other EFI
 # files, hence can display entries for these pother EFI files in the
 # boot menu.
 
 # Permanent files written:
 # An EFI application in the form of PE32+ executable that gives access
-# to EFI boot-loaders, stored in /boot as efimultibootmenux64.efi and
-# copied in its installation locations as BOOTx64.EFI, written by
-# grub.mkimage
+# to EFI boot-loaders, stored in /boot as EFI3Mx64.efi and copied in its
+# installation locations as BOOTx64.EFI, written by grub.mkimage.
 # A configuration file grub.cfg stored alongside and read by BOOTx64.EFI
-# in the target ESP, and its md5 chacksum
-# A md5 checksum efibootmenu.md5 of BOOTx64.EFI stored alongside it.
-# /var/efibootmenu stores one line per boot entry, with as format
-# allowing to store customized labels and record hidden ones.
-# /var/efibootmenuinstall records the UUID of the ESP where the
-# PE+32 image and associated grub.cfg are installed and the path to
+# in the target ESP, as its md5 checksum.
+# /var/EFI3M stores one line per boot entry, with fields allowing to
+# store customized labels and record hidden ones.
+# /var/EFI3Minstall records the UUID of the ESP where the PE+32 image
+# and associated grub.cfg are installed and the path to
 # these files inside the ESP
-# A NVRAM variable in the firmware to link to the PE32+ executable
-# written by this script.
-# /etc/efibootmenu/timeout stores the timeout in seconds before starting
+# A NVRAM variable in the firmware linking to the PE32+ image written by
+# this script in an ESP as /EFI/EFI3M/BOOTx64.EFI
+# /etc/EFI3M/timeout stores the timeout in seconds before starting
 # the first boot entry, if set by the user.
-# /etc/efibootmenu/usersound stores the choice of a sound (y) or mute
-# (n) boot menu if set by the user.
+# /etc/EFI3M/sound stores the choice of a sound (y) or mute
+# (n) boot menu, if set by the user or because at least one of the
+# applications brltty, espeakup or orca was running when writing the
+# configuration file 
 
 # Purpose of temporary files used:
 # TMP: main temporary dir. All other temporary files are in $TMP
@@ -77,18 +80,17 @@
 # ESPLIST: list of EFI System Partitions accessible at time of running
 # this script
 # ACCESSIBLE: lists the EFI loaders accessible at time of running this
-# script will be copied to /var/efibootmenu
+# script will be copied to /var/EFI3M
 # MNT: directory used as mount point for the ESP listed in ESPLIST. We
 # assume that if an ESP is already mounted, probably on /boot/efi, it is
 # with read and write permissions for root. Also used as mount point for
 # the USB stick on which write the PE32+ image and grub.cfg
 # BEFORE, AFTER: register the lists of USB sticks resp. before and after
 # the user should have plugged in the one on which to write the PE32+
-# image
-# grub.cfg that will be written in the target ESP
+# image grub.cfg that will be written in the target ESP
 #
-# Commands that have been used used to test this script are shipped in:
-# coreutils, efibootmgr, file, grep, gptfdisk, grub-2.02, parted,
+# Commands used by this script are shipped in:
+# coreutils, efibootmgr, efivar, file, grep, gptfdisk, grub-2.02, parted,
 # util-linux in a Slint or Slackware distribution. A run-time dependency
 # to grub could be avoided shipping a pre-built PE32+ image. This will
 # be proposed in a further release.
@@ -102,8 +104,8 @@ if [ ! -d /sys/firmware/efi ]; then
 	echo "EFI booting is not enabled, game over."
 	exit
 fi
-# The UEFI specification states that an EFI System partition has
-# a GUID of C12A7328-F81F-11D2-BA4B-00A0C93EC93B for a GPT layout.
+# The UEFI specification states that an EFI System partition has a GUID
+# of C12A7328-F81F-11D2-BA4B-00A0C93EC93B for a GPT layout.
 # In case of a DOS layout instead, an ESP should have an OS type of
 # 0xEF. lsblk writes these values in the same field PARTTYPE.
 ESPPARTTYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
@@ -111,20 +113,22 @@ OSTYPE=0xEF
 # Ref: https://fr.wikipedia.org/wiki/Note_de_musique
 SCALE="26163 29366 32963 34923 39200 44000 49388"
 #      do    ré    mi    fa    sol   la    si
-HALT="play 240 523 3 392 3 330 3 262 3"
-REBOOT="play 240 523 1 392 1 330 1 262 1 330 1 392 1 523 1" 
+HALT="play 240 523 1 392 1 330 1 262 1"
+REBOOT="play 240 523 1 392 1 330 1 262 1 330 1 392 1 523 1"
 TMP=$(mktemp -d)
 MNT=$TMP/MNT
 mkdir -p $MNT
-mkdir -p /etc/efibootmenu
+mkdir -p /etc/EFI3M
 ESPLIST=$TMP/ESPLIST
+DEFAULT_TIMEOUT=10
+HELLO_SOUND="play 480 440 1"
 
 # Main functions:
 #
 # install_on_system_ESP: makes and install the EFI boot manager on a
 # mass storage device permanently attached to the computer.
 #
-# install_on_USB_stick: wipes out and format an USB stick with an ESP 
+# install_on_USB_stick: wipes out and format an USB stick with an ESP
 # and installs the EFI boot manager there.
 #
 # install_in_firmware: insert an entry for the boot manager in the
@@ -133,7 +137,7 @@ ESPLIST=$TMP/ESPLIST
 # edit_the_menu: allow the user to hide or show a menu entry, modify
 # the label of a menu entry or change the order of the boot entries
 
-About_EFI3M() {
+features() {
 clear
 echo \
 "The EFI Multi Boot Menu Maker (EFI3M) allows booting any installed
@@ -148,7 +152,7 @@ Features:
    stick, which in turn will present you with the boot menu allowing to
    boot any of the installed systems. This helps in case for some reason
    the internal boot menu be not displayed.
-2) Customize the boot menu: hide a menu entry, edit its displayed label,
+3) Customize the boot menu: hide a menu entry, edit its displayed label,
    modify the order in which the entries are displayed, set the delay
    before auto boot, mute or sound the menu.
    All modifications will be automatically applied to the internal boot
@@ -158,8 +162,35 @@ Features:
 Caveat: the menu built by EFI3M can include entries for EFI files that
 are not boot loaders, or not working ones. Just hide them editing it.
 "
+printf "Press Enter to continue. "
+read dummy
+clear
+clear
+echo \
+"Requirements:
+GRUB version at least 2.02 should be installed, as well as usual
+utilities found in pretty much any Linux distribution.
 
-read -p "Press Enter to continue. " dummy
+Sound aid for the visually impaired:
+After booting, navigate in the menu with the up and down arrow keys.
+If brltty, espeakup or orca is active when EFI3M is run:
+1) A Beep is emitted as soon as the menu is displayed.
+2) When pressing Enter on the menu entry n (numbered from the top of
+   the menu), a tune of n sounds is played. The user can then confirm
+   this choice pressing Enter (the same tune is then played again) or go
+   back to the top of the menu pressing the Esc key.
+3) The same apply to the the last entries, Halt and Reboot. A descending
+   arpeggio is played for Halt, a descending followed by an ascending
+   arpeggio for Reboot. Again, confirm with Enter or cancel with Esc.
+
+The sound can also be set afterwards: type 4 in the main menu of EFI3M,
+then M for Mute or S for Sound, and validate the setting typing V.
+
+To apply the modification to an USB stick you will need to write again
+the menu on it, typing 3 in the main menu.
+"
+printf "Press enter to go back to the main menu "
+read dummy
 }
 
 to_lower() {
@@ -201,7 +232,7 @@ playtune() {
 		i=$((${i}+1))
 	done
 	echo $TUNE
-}	
+}
 
 one_space() {
 	echo "$1"|sed "s/ \{1,\}/ /g"
@@ -216,11 +247,11 @@ set_mountpoint() {
 		MOUNTPOINT=$MNT
 		mount $ESP $MNT
 		MOUNTED=n
-	fi 
+	fi
 }
 
 remove_previous_files() {
-	if [ ! -f /var/efibootmenuinstall ]; then
+	if [ ! -f /var/EFI3Minstall ]; then
 		return
 	fi
 	while read UUID EFIPATH; do
@@ -228,52 +259,70 @@ remove_previous_files() {
 		EFIDIR=$(dirname $EFIPATH)
 		if [ ! -d $MOUNTPOINT$EFIDIR ]; then
 			# Don't try to cd to a directory that have been removed
-			# after previous installation in system ESP
+			# from ESP in this machine after a previous installation
 			continue
 		fi
 		( cd $MOUNTPOINT$EFIDIR
-		if [ -f efibootmenu.md5 ]; then
-			if md5sum -c --quiet efibootmenu.md5; then
+		if [ -f EFI3M.md5 ]; then
+			if md5sum -c --quiet EFI3M.md5; then
 				rm BOOTx64.EFI
-				rm efibootmenu.md5
+				rm EFI3M.md5
 			fi
 		fi
-		if [ -f efibootgrub.md5 ]; then
-			if md5sum -c --quiet efibootgrub.md5; then
+		if [ -f EFI3Mgrub.md5 ]; then
+			if md5sum -c --quiet EFI3Mgrub.md5; then
 				rm grub.cfg
-				rm efibootgrub.md5
+				rm EFI3Mgrub.md5
 			fi
 		fi
 		)
 		if [ "$MOUNTED" = "n" ]; then
 			umount $MNT
 		fi
-	done < /var/efibootmenuinstall
+	done < /var/EFI3Minstall
 }
 
 display_the_menu() {
+	clear
+	if [ ! -f /var/EFI3M ]; then
+		printf %b "The boot menu does not exist yet. We can generate it now, but then don't\n"
+		printf %b "forget to install it afterwards in this computer or an USB stick!\n"
+		printf "Do you want to generate the menu now [y/N]? "
+		read dummy
+		if [ ! "$(to_lower $dummy)" = "y" ]; then
+			return
+		else
+			clear
+			make_boot_menu
+		fi
+	fi
+	printf %b "The boot menu will be displayed like this, if and when installed in the\n"
+	printf %b "computer or an USB stick:\n\n" 
 	while read name uuid path label; do
 		if [ "$label" = "LABEL=hidden" ]; then
 			continue
 		elif [ "$label" = "LABEL=defaultscheme" ]; then
-			echo " ($name)$path"
+			echo "($name)$path"
 		else
-			echo " ${label#LABEL=}"
+			echo "${label#LABEL=}"
 		fi
-	done < /var/efibootmenu
+	done < /var/EFI3M
+	echo "Shut down the computer"
+	echo "Reboot the computer"
+	printf  %b "\nPress Enter to continue. "
+	read dummy
 }
 
 display_install_path() {
 	if [ "$1" = "main" ]; then
-		SHOW=$(grep efibootmenu /var/efibootmenuinstall)
+		SHOW=$(grep EFI3M /var/EFI3Minstall)
 	else
-		SHOW=$(grep /EFI/BOOT /var/efibootmenuinstall)
+		SHOW=$(grep /EFI/BOOT /var/EFI3Minstall)
 	fi
 	UUID=$(echo $SHOW|cut -d" " -f1)
 	ESP_PATH=$(echo $SHOW|cut -d" " -f2)
 	PARTITION=$(one_space "$(lsblk -l -o UUID,NAME)"|grep $UUID|cut -d" " -f2)
-	echo "/dev/$PARTITION as ${ESP_PATH}.
-"
+	printf %b "/dev/$PARTITION as ${ESP_PATH}.\n"
 }
 
 update_grub() {
@@ -283,15 +332,15 @@ update_grub() {
 	while read NAME PARTTYPE UUID PARENT; do
 		set_mountpoint
 		( cd $MOUNTPOINT
-		MD5=$(find -name efibootgrub.md5)
+		MD5=$(find -name EFI3Mgrub.md5)
 		if [ ! "$MD5" = "" ]; then
 			for i in $MD5; do
-				( cd ${i%/efibootgrub.md5};
-				if md5sum -c --quiet efibootgrub.md5; then
+				( cd ${i%/EFI3Mgrub.md5};
+				if md5sum -c --quiet EFI3Mgrub.md5; then
 					cp $TMP/grub.cfg grub.cfg
-					md5sum grub.cfg > efibootgrub.md5
+					md5sum grub.cfg > EFI3Mgrub.md5
 				fi
-				)		
+				)
 			done
 		fi
 		)
@@ -308,7 +357,8 @@ build_boot_loader() {
 		if  [ "$grub2_mkimage" = "" ]; then
 			echo "Neither grub-mkimage nor grub2-mkimage have been found."
 			echo "Maybe grub (I mean grub2) is not installed?"
-			read -p "Press Enter to quit."
+			printf "Press Enter to quit."
+			read dummy
 			the_end
 		else
 			grub_mkimage=$grub2_mkimage
@@ -317,58 +367,33 @@ build_boot_loader() {
 	if [ ! "$(echo "$grub_mkimage"|wc -l)" = "1" ]; then
 		grub_mkimage=$(echo $grub_mkimage|sed -n 1p)
 	fi
+	GRUB_VERSION=$($(basename $grub_mkimage) -V | sed "s/.* //g")
+	if ! echo $GRUB_VERSION | grep -q "2.0[2|3|4]"; then
+		echo "GRUB version at least 2.02 is required but version $GRUB_VERSION is installed."
+		printf "Press Enter to quit. "
+		read dummy
+		the_end
+	fi
 	$(basename $grub_mkimage) \
 	--format=x86_64-efi \
-	--output=/boot/efimultibootmenux64.efi \
+	--output=/boot/EFI3Mx64.efi \
 	--prefix="" \
 	--compression=xz \
-	part_gpt part_msdos fat play chain reboot halt search search_fs_uuid efi_gop efi_uga all_video loadbios help at_keyboard usb_keyboard usb sleep extcmd normal
+	part_gpt part_msdos fat play chain reboot halt search search_fs_uuid help at_keyboard usb_keyboard usb sleep
 }
-
+# part_gpt part_msdos fat play chain reboot halt search search_fs_uuid efi_gop efi_uga all_video loadbios help at_keyboard usb_keyboard usb sleep extcmd normal
 store_default_settings() {
 	if [ ! "$USERTIMEOUT" = "" ]; then
-		echo $USERTIMEOUT > /etc/efibootmenu/timeout
+		echo $USERTIMEOUT > /etc/EFI3M/timeout
 	fi
 	if [ ! "$USERSOUND" = "" ]; then
-		echo $USERSOUND > /etc/efibootmenu/sound
+		echo $USERSOUND > /etc/EFI3M/sound
 	fi
 }
 
-write_grub_config_file() {
-	if [ -f /etc/efibootmenu/timeout ]; then
-		TIMEOUT=$(grep . /etc/efibootmenu/timeout)
-	fi
-	if [ "$TIMEOUT" = "" ]; then
-		TIMEOUT=15
-	fi
-	if [ -f /etc/efibootmenu/sound ]; then
-		USERSOUND=$(grep . /etc/efibootmenu/sound)
-	fi
-	# Just in case the file be empty
-	if [ "$USERSOUND" = "" ]; then
-		USERSOUND=notknown
-	fi
-	if [ ! "ps -C espeakup --noheaders" = "" ] || \
-	[ ! "ps -C orca --noheaders" = "" ] \
-	[ "$USERSOUND" = "y" ]; then
-		SOUND=y
-	fi
-	if [ "$USERSOUND" = "n" ]; then
-		SOUND=n
-	fi
-	if [ "$SOUND" = "y"  ]; then
-		PLAY="play 480 440 1"
-	fi
-	NUMENTRY=0
-	# Write our specific default settings
-	cat <<-EOF >$TMP/grub.cfg
-	# Configuration file written by EFI3M, the EFI Multi-boot Manager Maker.
-	set timeout=$TIMEOUT
-	$PLAY
-	set menu_color_normal=white/black
-	set menu_color_highlight=white/blue
-	EOF
-	# Write a stanza for each line of /var/efibootmenu
+write_config_file_with_sound() {
+	echo "$HELLO_SOUND" >> $TMP/grub.cfg
+	# Write a stanza for each line of /var/EFI3M
 	while read NAME UUID EFIPATH LABEL; do
 		if echo $LABEL|grep -q "^LABEL=hidden"; then
 			continue
@@ -378,35 +403,113 @@ write_grub_config_file() {
 		fi
 		NUMENTRY=$((${NUMENTRY}+1))
 		PLAYTUNE=""
-		if [ "$SOUND" = "y"  ] && [ $NUMENTRY -lt 36 ]; then
-			PLAYTUNE="$(playtune $NUMENTRY)"
+		PLAYTUNE="$(playtune $NUMENTRY)"
+		cat <<-EOF >> $TMP/grub.cfg
+		submenu "$LABEL" {
+			$PLAYTUNE
+			menuentry "start now $LABEL" {
+				insmod part_gpt
+				insmod part_msdos
+				insmod fat
+				search --fs-uuid --set=root $UUID
+				chainloader $EFIPATH
+				$PLAYTUNE
+			}
+		}
+		EOF
+	done < /var/EFI3M
+	# Add global features.
+	cat <<-EOF >> $TMP/grub.cfg
+	submenu "Shut down computer" {
+		$HALT
+		menuentry "Confirm shut down computer" {
+			$HALT
+			halt
+		}
+	}
+	submenu "Reboot computer" {
+		$REBOOT
+		menuentry "Confirm Reboot computer" {
+			$REBOOT
+			reboot
+		}
+	}
+	EOF
+}
+write_config_file_without_sound() {
+	# Write a stanza for each line of /var/EFI3M
+	while read NAME UUID EFIPATH LABEL; do
+		if echo $LABEL|grep -q "^LABEL=hidden"; then
+			continue
+		elif echo $LABEL|grep -q "^LABEL=defaultscheme"; then
+			LABEL="($NAME)$EFIPATH"
+		else LABEL=$(echo $LABEL|sed "s^LABEL=")
 		fi
 		cat <<-EOF >> $TMP/grub.cfg
 		menuentry "$LABEL" {
-		    insmod part_gpt
-		    insmod part_msdos
-		    insmod fat
-		    search --fs-uuid --set=root $UUID
-		    chainloader $EFIPATH
-		    $PLAYTUNE
+			insmod part_gpt
+			insmod part_msdos
+			insmod fat
+			search --fs-uuid --set=root $UUID
+			chainloader $EFIPATH
 		}
 		EOF
-	done < /var/efibootmenu
+	done < /var/EFI3M
 	# Add global features.
-	if [ ! "$SOUND" = "y" ];then
-		HALT=""
-		REBOOT=""
-	fi
 	cat <<-EOF >> $TMP/grub.cfg
 	menuentry "Shut down computer" {
-		$HALT
-	    halt
+		halt
 	}
 	menuentry "Reboot computer" {
-		$REBOOT
-	    reboot
+		reboot
 	}
 	EOF
+}
+
+write_grub_config_file() {
+	if [ -f /etc/EFI3M/timeout ]; then
+		TIMEOUT=$(grep . /etc/EFI3M/timeout)
+		# Just in case /etc/EFI3M/timeout has an unexpected content
+		if echo $TIMEOUT|grep -q "[^[:digit:]]"; then
+			TIMEOUT=$DEFAULT_TIMEOUT
+		fi
+			if [ $TIMEOUT -lt 5 ] || [ $TIMEOUT -gt 60 ]; then
+			TIMEOUT=$DEFAULT_TIMEOUT
+		fi
+	fi
+	if [ "$TIMEOUT" = "" ]; then
+		TIMEOUT=$DEFAULT_TIMEOUT
+	fi
+	if [ -f /etc/EFI3M/sound ]; then
+		USERSOUND=$(grep . /etc/EFI3M/sound)
+	fi
+	# Just in case /etc/EFI3M/sound has an unexpected content 
+	[ ! "$USERSOUND" = "n" ] && [ ! "$USERSOUND" = "y" ] && USERSOUND=""
+	if [ "$USERSOUND" = "" ]; then
+		if [ ! "$(ps -C espeakup --noheaders)" = "" ] || \
+		[ ! "$(ps -C orca --noheaders)" = "" ] || \
+		[ ! "$(ps -C brltty --noheaders)" = "" ] || \
+		[ "$USERSOUND" = "y" ]; then
+			SOUND=y
+		else
+			SOUND=n
+		fi
+	else
+		SOUND=$USERSOUND
+	fi
+	NUMENTRY=0
+	# Write our specific default settings
+	cat <<-EOF >$TMP/grub.cfg
+	# Configuration file written by EFI3M, the EFI Multi-boot Manager Maker.
+	set timeout=$TIMEOUT
+	set menu_color_normal=white/black
+	set menu_color_highlight=white/blue
+	EOF
+	if [ "$SOUND" = "y"  ]; then
+		write_config_file_with_sound
+	else
+		write_config_file_without_sound
+	fi
 }
 
 list_the_ESP() {
@@ -417,15 +520,15 @@ list_the_ESP() {
 		echo "No EFI partition found, game over."
 		return
 	fi
-	
+
 }
 
 make_boot_menu() {
 	# Write a line for each menu entry in the file $ACCESSIBLE that will
-	# be moved to /var/efibootmenu, creating or updating it.
+	# be moved to /var/EFI3M, creating or updating it.
 	# We remove the stuff we previously installed in all accessible ESP
 	# thus they won't be included in grub.cfg, which will be written
-	# from /var/efibootmenu.
+	# from /var/EFI3M.
 	# For this reason this function will only be called by
 	# install_on_system_ESP, implying that install_on_USB_stick will
 	# call install_on_system_ESP, not directly this function. But then
@@ -455,16 +558,16 @@ make_boot_menu() {
 		# EFIPATHS will list all paths to efi boot loaders in this ESP
 		EFIPATHS=$(find -iname "*.efi"|sed s/.//)
 		# Select the EFI boot loaders and write a line for each.
-		# For now we don't exclude the rEFInd boot manager although
-        # it be somehow redundant.
-        # We include all files ending in .efi not written by this script
-        # and fulfilling at least one of the following conditions: 
-        # "file" says they are 'PE32+ executable' and 'EFI application'
-        # They lie in the "fallback" directory /EFI/BOOT
-        # They lie in /EFI/tools.
+		# For now we don't exclude the GRUB and rEFInd boot managers
+		# although it be somehow redundant. This could be made optional.
+		# We include all files ending in .efi not written by this script
+		# and fulfilling at least one of the following conditions:
+		# "file" says they are 'PE32+ executable' and 'EFI application'
+		# They lie in the "fallback" directory /EFI/BOOT
+		# They lie in /EFI/tools.
 		for EFIPATH in $EFIPATHS; do
 			EFIAPP=$(file $MOUNTPOINT$EFIPATH|grep 'PE32+ executable'|grep 'EFI application')
-			FALLBACK=$(echo $MOUNPOINT$EFIPATH|grep -i /EFI/BOOT)
+			FALLBACK=$(echo $MOUNTPOINT$EFIPATH|grep -i /EFI/BOOT)
 			TOOLS=$(echo $MOUNTPOINT$EFIPATH|grep -i /EFI/tools)
 			# REFIND=$(echo $MOUNTPOINT$EFIPATH|grep -i /efi/refind/refind_x64.efi)
 			INCLUDE="n"
@@ -474,7 +577,7 @@ make_boot_menu() {
 			if [ "$INCLUDE" = "n" ]; then
 				continue
 			fi
-			# /var/efibootmenu stores a menu with customized labels
+			# /var/EFI3M stores a menu with customized labels
 			# in lines formatted this way:
 			# Lines with a customized label:
 			# $NAME $UUID $EFIPATH LABEL=<label>
@@ -484,16 +587,16 @@ make_boot_menu() {
 			# $NAME $UUID $EFIPATH LABEL=hidden
 			#
 			# When processing the currently accessible boot loaders we
-			# match their UUID with the ones in /var/efibootmenu,
+			# match their UUID with the ones in /var/EFI3M,
 			# to apply the recorded customization to the new menu,
-			# append to or remove from /var/efibootmenu lines
+			# append to or remove from /var/EFI3M lines
 			# corresponding to efi boot loaders newly accessible or no
 			# more accessible, respectively.
 			LABEL="($NAME)$EFIPATH"
-			if [ -f /var/efibootmenu ]; then
-				LINE=$(grep $EFIPATH /var/efibootmenu|grep $UUID)
+			if [ -f /var/EFI3M ]; then
+				LINE=$(grep $EFIPATH /var/EFI3M|grep $UUID)
 				if [ "$LINE" = "" ]; then
-					# not yet registered in /var/efibootmenu
+					# not yet registered in /var/EFI3M
 					LINE="$NAME $UUID $EFIPATH LABEL=defaultscheme"
 					echo "$LINE" >> $NEW
 				else CHOICE="$(echo $LINE|sed "s/.*LABEL=//")"
@@ -517,37 +620,37 @@ make_boot_menu() {
 			umount $MNT
 		fi
 	done < $ESPLIST
-	# update /var/efibootmenu
-	# We will first write in /var/efibootmenu the lines previously and
-	# still there then the new ones. This is to avoid changing the order
-	# of the boot entries possibly set by the user.
+	# update /var/EFI3M
+	# We will first write in /var/EFI3M the lines previously and still
+	# there then the new ones. This is to avoid changing the order of
+	# the boot entries possibly set by the user.
 	# We exclude entries previously installed by us.
-	if [ -f /var/efibootmenu ]; then
-		mv /var/efibootmenu /var/efibootmenu.orig
+	if [ -f /var/EFI3M ]; then
+		mv /var/EFI3M /var/EFI3M.orig
 		while read NAME UUID EFIPATH LABEL; do
-			if [ ! -f /var/efibootmenuinstall ]; then
+			if [ ! -f /var/EFI3Minstall ]; then
 				INSTALLED=""
-			else 
-				INSTALLED=$(grep $UUID /var/efibootmenuinstall|grep $EFIPATH)
+			else
+				INSTALLED=$(grep $UUID /var/EFI3Minstall|grep $EFIPATH)
 			fi
 			if [ "$INSTALLED" = "" ]; then
-				echo "$NAME $UUID $EFIPATH $LABEL" >> /var/efibootmenu
+				echo "$NAME $UUID $EFIPATH $LABEL" >> /var/EFI3M
 			fi
-		done < /var/efibootmenu.orig
+		done < /var/EFI3M.orig
 	fi
 	while read NAME UUID EFIPATH LABEL; do
-		if [ ! -f /var/efibootmenuinstall ]; then
+		if [ ! -f /var/EFI3Minstall ]; then
 			INSTALLED=""
-		else 
-			INSTALLED=$(grep $UUID /var/efibootmenuinstall|grep $EFIPATH)
+		else
+			INSTALLED=$(grep $UUID /var/EFI3Minstall|grep $EFIPATH)
 		fi
 		if [ "$INSTALLED" = "" ]; then
-			echo "$NAME $UUID $EFIPATH $LABEL" >> /var/efibootmenu
+			echo "$NAME $UUID $EFIPATH $LABEL" >> /var/EFI3M
 		fi
 	done < $NEW
 	rm $ALREADY $NEW
-	if [ -f /var/efibootmenu.orig ]; then
-		rm /var/efibootmenu.orig
+	if [ -f /var/EFI3M.orig ]; then
+		rm /var/EFI3M.orig
 	fi
 }
 
@@ -558,7 +661,8 @@ install_on_system_ESP() {
 	# Output one line per ESP with these fields:
 	# name parttype uuid pkname
 	# pkname is the name of the device (parent of the partition)
-	remove_previous_files
+	remove_previous_files efibootmenu
+	remove_previous_files EFI3M
 	make_boot_menu
 	write_grub_config_file
 	build_boot_loader
@@ -584,17 +688,17 @@ install_on_system_ESP() {
 	# We will propose to install the boot menu as /EFI/BOOT/BOOTx64.EFI
 	# in $ESP if it doesn't exist yet or if the existing one has been
 	# written by this script, which we check against its md5 checksum.
-	INSTALLDIR=$MOUNTPOINT/EFI/efibootmenu
+	INSTALLDIR=$MOUNTPOINT/EFI/EFI3M
 	if [ ! -d "$INSTALLDIR" ]; then
 		mkdir -p $INSTALLDIR
 	fi
-	cp /boot/efimultibootmenux64.efi $INSTALLDIR/BOOTx64.EFI
+	cp /boot/EFI3Mx64.efi $INSTALLDIR/BOOTx64.EFI
 	cp $TMP/grub.cfg $INSTALLDIR
 	( cd $INSTALLDIR
-	md5sum BOOTx64.EFI > efibootmenu.md5
-	md5sum grub.cfg > efibootgrub.md5
+	md5sum BOOTx64.EFI > EFI3M.md5
+	md5sum grub.cfg > EFI3Mgrub.md5
 	)
-	echo "$UUID /EFI/efibootmenu/BOOTx64.EFI" > /var/efibootmenuinstall
+	echo "$UUID /EFI/EFI3M/BOOTx64.EFI" > /var/EFI3Minstall
 	clear
 	printf "The boot menu has been installed in "
 	display_install_path main
@@ -606,21 +710,21 @@ install_on_system_ESP() {
 	[ ! -f $DEFAULTDIR/grub.cfg ]; then
 		DEFAULT=y
 	# We removed the previous files installed by this script from this
-	# system,  but $DEFAULTDIR/BOOTx64 could have been written by this
+	# system, but $DEFAULTDIR/BOOTx64 could have been written by this
 	# script run from another system on the same machine. If that is the
 	# case, we may replace it.
 	else
 		( cd $DEFAULTDIR
-		if [ -f efibootmenu.md5 ]; then
-			if md5sum -c --quiet efibootmenu.md5; then
+		if [ -f EFI3M.md5 ]; then
+			if md5sum -c --quiet EFI3M.md5; then
 				rm BOOTx64.EFI
-				rm efibootmenu.md5
+				rm EFI3M.md5
 			fi
 		fi
-		if [ -f efibootgrub.md5 ]; then
-			if md5sum -c --quiet efibootgrub.md5; then
+		if [ -f EFI3Mgrub.md5 ]; then
+			if md5sum -c --quiet EFI3Mgrub.md5; then
 				rm grub.cfg
-				rm efibootgrub.md5
+				rm EFI3Mgrub.md5
 			fi
 		fi
 		)
@@ -632,14 +736,15 @@ install_on_system_ESP() {
 	if [ "$DEFAULT" = "y" ]; then
 		mkdir -p $DEFAULTDIR
 		CHOICE="n"
-		read -p "Do you want to also install it in the default BOOT directory?
-This can help insure that the boot menu will be displayed [y/N] " CHOICE
+		echo "Do you want to also install it in the default BOOT directory?"
+		printf %b "This can help insure that the boot menu will be displayed [y/N] "
+		read CHOICE
 		if [ "$(to_lower "$CHOICE")" = "y" ]; then
 			cp $INSTALLDIR/BOOTx64.EFI $DEFAULTDIR
 			cp $INSTALLDIR/grub.cfg $DEFAULTDIR
-			cp $INSTALLDIR/efibootmenu.md5 $DEFAULTDIR
-			cp $INSTALLDIR/efibootgrub.md5 $DEFAULTDIR
-			echo "$UUID /EFI/BOOT/BOOTx64.EFI" >> /var/efibootmenuinstall
+			cp $INSTALLDIR/EFI3M.md5 $DEFAULTDIR
+			cp $INSTALLDIR/EFI3Mgrub.md5 $DEFAULTDIR
+			echo "$UUID /EFI/BOOT/BOOTx64.EFI" >> /var/EFI3Minstall
 			printf "The boot menu has also been installed in "
 			display_install_path fallback
 		else
@@ -655,34 +760,26 @@ This can help insure that the boot menu will be displayed [y/N] " CHOICE
 	if [ "$MOUNTED" = "n" ]; then
 		umount $MNT
 	fi
-	read -p "Do you want to add an entry for the boot menu in the firmware? [y/N] " FIRMWARE
-	if [ "$FIRMWARE" = "Y" ] || [ "$FIRMWARE" = "y" ]; then
+	printf "Do you want to add an entry for the boot menu in the firmware? [y/N] "
+	read FIRMWARE
+	if [ "$(to_lower $FIRMWARE)" = "y" ]; then
 		install_in_firmware
-	fi
-echo "
-You can display the menu now, then if need be edit it to modify, hide
-or reorder the labels."
-read -p "Do you want to display the menu now? [y/N]: " CHOICE
-	if [ "$(to_lower "$CHOICE")" = "y" ]; then
-		clear
-		display_the_menu
-		read -p "Press Enter to continue." dummy
 	fi
 }
 
 install_in_firmware() {
 	# We are optionally called by install_on_system_ESP.
 	PARTNUM=$(echo $ESP|sed "s,${ESP_DEVICE},,")
-	PARTNUM=$(echo $PARTNUM|sed s/[^[:digit:]]*//g)
-	echo "
-This entry has been added to the firmware's boot menu:"
-	REPORT=$(efibootmgr -v -c -d $ESP_DEVICE -p $PARTNUM -l "\\EFI\\efibootmenu\\BOOTx64.EFI" -L "EFI Boot menu")
+	PARTNUM=$(echo $PARTNUM|sed "s/[^[:digit:]]*//g"	)
+	printf %b "\nThis entry has been added to the firmware's boot menu:\n"
+	REPORT=$(efibootmgr -v -c -d $ESP_DEVICE -p $PARTNUM -l "\\EFI\\EFI3M\\BOOTx64.EFI" -L "EFI Boot menu")
 	echo "$REPORT"|grep "EFI Boot menu"
-	read -p "Press Enter to continue. " dummy
+	printf "Press Enter to continue. "
+	read dummy
 }
 
 install_on_USB_stick() {
-	if [ ! -f /var/efibootmenu ]; then
+	if [ ! -f /var/EFI3M ]; then
 		make_boot_menu
 	fi
 	if [ ! -f $TMP/grub.cfg ]; then
@@ -693,64 +790,74 @@ install_on_USB_stick() {
 	STICK="y"
 	BEFORE=$TMP/BEFORE
 	AFTER=$TMP/AFTER
-	while [ 0 ]; do
+	while true; do
 		clear
 		if [ "$BADSTICK" = "y" ]; then
-			read -p "Do you want to try again making an USB boot stick? [y/N]? " STICK
+			printf "Do you want to try again making an USB boot stick? [y/N]? "
+			read STICK
 		fi
-		if [ ! "$STICK" = "y" ] && [ ! "$STICK" = "Y" ]; then
+		if [ ! "$(to_lower $STICK)" = "y" ]; then
 			rm $BEFORE $AFTER
 			return
 		fi
 		clear
-		NEWSTICK=Y
 		lsblk -l -o name,type,tran,hotplug|grep disk|grep usb|grep 1$|sort|sed "s/  .*//" > $BEFORE
-		read -p "WARNING: the content of the USB stick will be irrecoverably deleted!
-
-Type Q to quit, or plug in the USB stick. Then, press Enter: " ANSWER
+		printf %b "WARNING: the content of the USB stick will be irrecoverably deleted!\n\n"
+		printf "Type Q to quit, or plug in the USB stick. Then, press Enter: "
+		read ANSWER
 		sleep 1
 		if [ "$(to_lower "$ANSWER")" = "q" ]; then
 			rm $BEFORE
 			return
 		fi
 		lsblk -l -o name,type,tran,hotplug|grep disk|grep usb|grep 1$|sort|sed "s/  .*//" > $AFTER
-        STICKNAME=""
+		STICKNAME=""
 		while read NEW_DEVICE; do
 			if [ "$(grep $NEW_DEVICE $BEFORE)" = "" ]; then
 				STICKNAME=$NEW_DEVICE
 			fi
 		done < $AFTER
 		if [ "$STICKNAME" = "" ]; then
-			printf "
-No new device detected.
-If the USB stick was already inserted, please remove it now.
-Press Enter to continue. "
+			printf %b "\nNo new device detected.\n"
+			printf %b "If the USB stick was already inserted, please remove it now.\n"
+			printf "Press Enter to continue. "
 			read dummy
 			BADSTICK="y"
-			continue 
+			continue
 		else
 			clear
 			VENDOR=$(lsblk -l -o vendor,name|grep "${STICKNAME}$"|sed "s/[^[:space:]]*$//")
 			MODEL=$(lsblk -l -o model,name|grep "${STICKNAME}$"|sed "s/[^[:space:]]*$//")
 			SIZE=$(lsblk -l -o size,name|grep "${STICKNAME}$"|sed "s/[^[:space:]]*$//")
-			echo "Found a device with these characteristics:
-Vendor: $VENDOR
-Model:  $MODEL
-Size:   $SIZE"
-			read -p "
-Please check carefully this information, not to wipe the wrong device!
-
-Is it the good device? [y/N]: " GOOD
-			if [ "$GOOD" = "Y" ] || [ "$GOOD" = "y" ]; then
+			printf %b "Found a device with these characteristics\n":
+			printf %b  "Vendor: $VENDOR\n"
+			printf %b "Model:  $MODEL\n"
+			printf %b "Size:   $SIZE\n"
+			printf %b "\nPlease check carefully this information, not to wipe the wrong device!\n\n"
+			printf "Is it the good device? [y/N]: "
+			read GOOD
+			if [ "$(to_lower $GOOD)" = "y" ]; then
+				# If a partition of the USB stick is already mounted,
+				# bail out. This can occur in case of auto-mounting of
+				# removable devices.
+				if [ ! "$(one_space "$(df -h)"|grep /dev/$STICKNAME|cut -d" " -f 6)" = "" ]; then
+					printf %b "\nA partition of this USB stick is already mounted.\n"
+					printf %b "Please unmount it or choose another device, then try again.\n"
+					printf "Press Enter to continue. "
+					read dummy
+					BADSTICK="y"
+					continue
+				fi
 				break
 			else
 				clear
-				echo -n "Please remove this device, then press Enter: "
+				printf "Please remove this device, then press Enter: "
 				BADSTICK="y"
 				read dummy
-				continue 
+				continue
 			fi
 		fi
+
 	done
 	STICKDEVICE=/dev/$STICKNAME
 	### Format the USB stick and copy the EFI image there
@@ -763,71 +870,70 @@ Is it the good device? [y/N]: " GOOD
 	mount $STICKESP $MNT
 	mkdir -p $MNT/EFI/BOOT
 	cp $TMP/grub.cfg $MNT/EFI/BOOT
-	cp /boot/efimultibootmenux64.efi $MNT/EFI/BOOT/BOOTx64.EFI
+	cp /boot/EFI3Mx64.efi $MNT/EFI/BOOT/BOOTx64.EFI
 	umount $MNT
 	rm $BEFORE $AFTER
 	echo "The boot menu has been written on the USB stick."
-	echo "
-You can display it now, then if need be edit it to modify, hide, or
-or reorder the labels. You will need to write it again to the USB stick
-to apply your modifications."
-    read -p "Do you want to display the menu now? [y/N]: " CHOICE
-	if [ "$(to_lower "$CHOICE")" = "y" ]; then
-		display_the_menu
-		read -p "Press Enter to continue." dummy
-	fi
+	printf "Press Enter to continue. "
+	read dummy
 }
 
 edit_label() {
 LINE=$TMP/LINE
-grep ^$CHOICE $MENU>$LINE
-read LINENUMBER name uuid path label < $LINE
-while [ 0 ]; do
+while true; do
+	grep ^$CHOICE $MENU>$LINE
+	read LINENUMBER name uuid path label < $LINE
 	clear
+	echo "This boot entry:"
 	echo "$path in partition /dev/$name"
 	if [ "$label" = "LABEL=hidden" ]; then
-		echo "is currently not displayed in the menu"
+		echo "will not be displayed."
 	elif [ "$label" = "LABEL=defaultscheme" ]; then
-		echo "is currently displayed like this:"
+		echo "will be displayed by default:"
 		echo "($name)$path"
-	else 
-		echo "is currently displayed: \"${label#LABEL=}\""
+	else
+		echo "will be displayed: \"${label#LABEL=}\""
 		echo
 	fi
-	echo
-	read -p "Please type:
-H to Hide this boot entry,
-D to keep or reset the Default label,
-or the new label (5 to 40 characters, spaces allowed but not quotes),
-then press Enter: " LABEL
+	printf %b "\nPlease type either:\n"
+	printf %b "H to Hide this boot entry,\n"
+	printf %b "D to use the Default Label\n"
+	printf %b "or the new label (5 to 60 characters, spaces allowed but not quotes)."
+	printf %b "\n\nJust press Enter to accept the current setting.\n"
+	printf %b "\nPlease type the new label or the letter D or H now: "
+	read LABEL
+	[ "$LABEL" = "" ] && rm $LINE && return
 	if [ "$(to_lower "$LABEL")" = "h" ]; then
 		sed "/^$LINENUMBER /s.*$LINENUMBER $name $uuid $path LABEL=hidden" $MENU > somedummmyfile
 		mv somedummmyfile $MENU
 		rm $LINE
-		return
+		continue
 	elif   [ "$(to_lower "$LABEL")" = "d" ]; then
 		sed "/^$LINENUMBER /s.*$LINENUMBER $name $uuid $path LABEL=defaultscheme" $MENU > somedummmyfile
 		mv somedummmyfile $MENU
 		rm $LINE
-		return
+		continue
 	else
-		if [ ${#LABEL} -lt 5 ] || [ ${#LABEL} -gt 40 ]; then
-			read -p "The label should have between 5 and 4O characters.
-Press Enter then try again." dummy
+		if [ ${#LABEL} -lt 5 ] || [ ${#LABEL} -gt 60 ]; then
+			printf %b "The label should have between 5 and 4O characters.\n"
+			printf "Press Enter then try again. "
+			read dummy
 			continue
 		elif echo $LABEL|grep -q -e '"' -e "'"; then
-			read -p "Characters \" and ' are not allowed in the label.
-Press Enter then try again." dummy
+			printf %b "Characters \" and ' are not allowed in the label.\n"
+			printf "Press Enter then try again. "
+			read dummy
 			continue
-		elif echo $LABEL|grep -q [^[:print:]]; then
-			read -p "Only printable characters, including spaces, are allowed in the label.
-Press Enter then try again." dummy
+		elif echo $LABEL|grep -q "[^[:print:]]"; then
+			printf %b "Only printable characters, including spaces, are allowed in the label\n".
+			printf "Press Enter then try again. "
+			read dummy
 			continue
 		else
 			sed "/^$LINENUMBER /s.*$LINENUMBER $name $uuid $path LABEL=$LABEL" $MENU > somedummmyfile
 			mv somedummmyfile $MENU
 			rm $LINE
-			return
+			continue
 		fi
 		rm $LINE
 		return
@@ -835,13 +941,53 @@ Press Enter then try again." dummy
 done
 }
 
+move_up() {
+
+		if [ $NUMBER -gt 2 ]; then
+			sed -n 1,$((${NUMBER}-2))p $MENU>>$NEWMENU
+		fi
+		sed -n ${NUMBER}p $MENU>>$NEWMENU
+		sed -n $((${NUMBER}-1))p $MENU>>$NEWMENU
+		sed -n $((${NUMBER}+1)),${MAXLINENUMBER}p $MENU>>$NEWMENU
+		NEWNUMBER=0
+		printf "" > $MENU
+		while read  OLDNUMBER name uuid path label; do
+			NEWNUMBER=$(($NEWNUMBER + 1))
+			echo "$NEWNUMBER $name $uuid $path $label" >> $MENU
+		done < $NEWMENU
+		printf "" > $NEWMENU
+		NUMBER=$(( $NUMBER - 1 ))
+		unset -v C1 C2
+		MOVE=""
+}
+move_down() {
+		if [ $NUMBER -gt 1 ]; then
+			sed -n 1,$((${NUMBER}-1))p $MENU>>$NEWMENU
+		fi
+		sed -n $((${NUMBER}+1))p $MENU>>$NEWMENU
+		sed -n ${NUMBER}p $MENU>>$NEWMENU
+		if [ $NUMBER -lt $((${MAXLINENUMBER}-1)) ]; then
+			sed -n $((${NUMBER}+2)),${MAXLINENUMBER}p $MENU>>$NEWMENU
+		fi
+		NEWNUMBER=0
+		printf "" > $MENU
+		while read OLDNUMBER name uuid path label; do
+			NEWNUMBER=$(($NEWNUMBER + 1))
+			echo "$NEWNUMBER $name $uuid $path $label" >> $MENU
+		done < $NEWMENU
+		printf "" > $NEWMENU
+		NUMBER=$(($NUMBER + 1))
+		unset -v C1 C2
+		MOVE=""
+}
+
 change_the_boot_order() {
+	MOVE=""
 	NEWMENU=$TMP/NEWMENU
 	MENU="$1"
 	MAXLINENUMBER=$2
-	while [ 0 ]; do
+	while true; do
 		clear
-
 		echo "Current menu:"
 		while read LINENUMBER name uuid path label; do
 			printf $LINENUMBER
@@ -857,41 +1003,71 @@ change_the_boot_order() {
 				echo " ${label#LABEL=}"
 			fi
 		done < $MENU
-		echo "
-Type a line number to move this line up.
-
-Just press Enter when you are done to return to the main menu and
-validate your modifications."
-		read -p "Line number: " NUMBER
+		printf %b "\nType the number of the line to move, press Enter when you are done: "
+		read NUMBER
 		if [ "$NUMBER" = "" ]; then
 			rm $NEWMENU
 			return
 		fi
-		if echo $NUMBER|grep -q [^[:digit:]]; then 
-			read -p "Not a number, press Enter to continue." dummy
+		if echo $NUMBER|grep -q "[^[:digit:]]"; then
+			printf "Not a number, press Enter to continue."
+			read dummy
 			continue
-		elif [ $NUMBER -lt 2 ] || [ $NUMBER -gt $MAXLINENUMBER ]; then
-			echo "The line number should be between 2 and $MAXLINENUMBER."
-			read -p "Press Enter to continue. " dummy
-			continue
-		else
-			if [ $NUMBER -gt 2 ]; then
-				sed -n 1,$((${NUMBER}-2))p $MENU>>$NEWMENU
-			fi
-			sed -n ${NUMBER}p $MENU>>$NEWMENU
-			sed -n $((${NUMBER}-1))p $MENU>>$NEWMENU
-			sed -n $((${NUMBER}+1)),${MAXLINENUMBER}p $MENU>>$NEWMENU
 		fi
-		NEWNUMBER=0
-		echo -n "" > $MENU
-		while read  OLDNUMBER name uuid path label; do
-		NEWNUMBER=$(($NEWNUMBER + 1))
-		echo "$NEWNUMBER $name $uuid $path $label" >> $MENU
-	done < $NEWMENU
-	echo -n "" > $NEWMENU
+		if [ $NUMBER -lt 1 ] || [ $NUMBER -gt $MAXLINENUMBER ]; then
+			echo "The line number should be between 1 and $MAXLINENUMBER."
+			printf "Press Enter to continue. "
+			read dummy
+			continue
+		fi
+		clear
+		while true; do
+			echo "Current menu:"
+			while read LINENUMBER name uuid path label; do
+				if [ $LINENUMBER -eq $NUMBER ]; then
+					printf "*"
+				else
+					printf " "
+				fi
+				if [ "$label" = "LABEL=hidden" ]; then
+					echo " ($name)$path (not displayed)"
+				elif [ "$label" = "LABEL=defaultscheme" ]; then
+					echo " ($name)$path"
+				else
+					echo " ${label#LABEL=}"
+				fi
+			done < $MENU
+			printf %b "\nUse the arrow keys to move the selected boot entry up or down,"
+			printf %b "\npress enter when you are done "
+			while true; do
+				previous_tty_settings=$(stty -g)
+				stty -icanon -echo
+				# KEY=$(head -c1)
+				KEY=$(dd bs=1 count=1 2>/dev/null)
+				stty "$previous_tty_settings"
+				case $KEY in
+					"") break 2 ;;
+					) C1="ESC" ;;
+					[) [ "$C1" = "ESC" ] && C2="[" ;;
+					A) [ "$C2" = "[" ] && MOVE=up ;;
+					B) [ "$C2" = "[" ] && MOVE=down ;;
+					*) ;;
+				esac
+				if [ "$MOVE" = "down" ] && [ $NUMBER -lt $MAXLINENUMBER ]; then
+					clear
+					move_down
+					continue 2
+				fi
+				if [ "$MOVE" = "up" ] && [ $NUMBER -gt 1 ]; then
+					clear
+					move_up
+					continue 2
+				fi
+			done
+		done
 	done
 }
-	
+
 edit_the_menu() {
 	make_boot_menu
 	CHOICE=""
@@ -900,12 +1076,9 @@ edit_the_menu() {
 	while read line; do
 		LINENUMBER=$(($LINENUMBER + 1))
 		echo "$LINENUMBER $line" >> $MENU
-	done < /var/efibootmenu
+	done < /var/EFI3M
 	MAXLINENUMBER=$LINENUMBER
-		DONE=n
-	REMOVE=n
-	HIDEINSTALLEDMENU=y
-	while [ 0 ]; do
+	while true; do
 		clear
 		echo "Current menu (custom labels on the second line):"
 		echo
@@ -923,72 +1096,94 @@ edit_the_menu() {
 				echo " ($name)$path"
 				echo "   Label: ${label#LABEL=}"
 			fi
-			
+
 		done < $MENU
-		echo "
-Type:
-a number between 1 and $MAXLINENUMBER to select a boot entry then set
-  the label used to display it in the boot menu,
-D to set the Delay before auto boot,
-M for a Mute menu, S for a menu with Sound,"
-if [ $MAXLINENUMBER -gt 1 ]; then
-	echo "O to modify the boot Order,"
-fi
-read -p "V to Validate your modifications.
-
-Just press Enter to undo all modifications and return to the main menu.
-
-Your choice: " CHOICE
+		printf %b "\nType either:"
+		printf %b "\nthe number of a boot entry to customize its label,"
+		printf %b "\nD to set the Delay before auto boot,"
+		printf %b "\nM for a Mute menu, S for a menu with Sound,"
+		if [ $MAXLINENUMBER -gt 1 ]; then
+			printf %b  "\nO to modify the boot Order,"
+		fi
+		printf %b "\nV to Validate your modifications."
+		printf "\nJust press Enter to undo all modifications and return to the main menu."
+		printf %b "\n\nType the number or letter that corresponds to your choice. "
+		read CHOICE
 		if [ "$CHOICE" = "" ]; then
 			rm $MENU
 			return
 		fi
 		if [ "$(to_lower "$CHOICE")" = "d" ]; then
-			while [ 0 ]; do 
-				clear 
-				read -p "Please type the delay in seconds before automatically booting the first
-menu entry (between 5 and 60 seconds) " USERTIMEOUT
-				if echo $TIMEOUT|grep -q [^[:digit:]]; then 
-					read -p "Not a number, press Enter and try again. " dummy
+			while true; do
+				clear
+				if [ -f /etc/EFI3M/timeout ]; then
+					TIMEOUT=$(grep . /etc/EFI3M/timeout)
+					if echo $TIMEOUT|grep -q "[^[:digit:]]"; then
+						TIMEOUT=$DEFAULT_TIMEOUT
+					fi
+					if [ $TIMEOUT -lt 5 ] || [ $TIMEOUT -gt 60 ]; then
+						TIMEOUT=$DEFAULT_TIMEOUT
+					fi
+				else
+					TIMEOUT=$DEFAULT_TIMEOUT
+				fi
+				printf %b "The current time out before automatically booting the first menu entry is: \n"
+				printf %b "$TIMEOUT seconds\n\n"
+				printf %b "Please type the new time out or just press Enter to accept the current one. "
+				read USERTIMEOUT
+				if [ "$USERTIMEOUT" = "" ]; then
+					USERTIMEOUT=$TIMEOUT
+					break
+				fi
+				if echo $USERTIMEOUT|grep -q "[^[:digit:]]"; then
+					printf "Not a number, press Enter and try again. "
+					read dummy
 					continue
 				fi
 				if [ $USERTIMEOUT -lt 5 ] || [ $USERTIMEOUT -gt 60 ]; then
-					read -p "The delay should be between 5 and 60, press Enter and try again " dummy
-					continue 
+					printf "The time out should be between 5 and 60, press Enter and try again. "
+					read dummy
+					continue
 				fi
-				echo "The delay will be $USERTIMEOUT seconds if you validate this setting."
-				read -p "Press Enter to continue. " dummy
+				echo "The time out will be $USERTIMEOUT seconds if you validate this setting."
+				printf %b "Press Enter to continue. "
+				read dummy
 				break
 			done
 		elif [ "$(to_lower "$CHOICE")" = "s" ]; then
 			USERSOUND=y
 			clear
-			echo "You will have a menu with sound if you validate this setting." 
-			read -p "Press Enter to continue. " dummy
+			echo "You will have a menu with sound if you validate this setting."
+			printf "Press Enter to continue. "
+			read dummy
 		elif [ "$(to_lower "$CHOICE")" = "m" ]; then
 			USERSOUND=n
 			clear
-			echo "You will have a mute menu if you validate this setting." 
-			read -p "Press Enter to continue. " dummy
+			echo "You will have a mute menu if you validate this setting."
+			printf "Press Enter to continue. "
+			read dummy
 		elif [ "$(to_lower "$CHOICE")" = "v" ]; then
-			sed "s^[^ ]*" $MENU > /var/efibootmenu
+			sed "s^[^ ]*" $MENU > /var/EFI3M
 			store_default_settings
 			write_grub_config_file
 			update_grub
 			rm $MENU
-			echo "
-The boot menu is up to date.
-			"
-			read -p "Press Enter to continue. " dummy
+			clear
+			printf %b "The boot menu has been updated. If not already done, you can install it\n"
+			printf %b "in your computer. You will need to write it again on an USB stick to\n"
+			printf %b "update it there, case occurring.\n\n"
+			printf "Press Enter to continue. "
+			read dummy
 			return
-		elif [ "$(to_lower "$CHOICE")" = "o" ] &&
-		[ $MAXLINENUMBER -ge 2 ]; then
+		elif [ "$(to_lower "$CHOICE")" = "o" ] && [ $MAXLINENUMBER -ge 2 ]; then
 			change_the_boot_order $MENU $MAXLINENUMBER
-		elif echo $CHOICE|grep -q [^[:digit:]]; then 
-			read -p "Wrong typing, press Enter to continue." dummy
+		elif echo $CHOICE|grep -q "[^[:digit:]]"; then
+			printf  "Wrong typing, press Enter to continue."
+			read dummy
 		elif [ $CHOICE -eq 0 ] || [ $CHOICE -gt $MAXLINENUMBER ]; then
-			echo "The line number should be between 1 and $MAXLINENUMBER."
-			read -p "Press Enter to continue. " dummy
+			printf %b "The line number should be between 1 and $MAXLINENUMBER.\n"
+			printf "Press Enter to continue. "
+			read dummy
 		else
 			edit_label
 		fi
@@ -1005,24 +1200,24 @@ the_end() {
 	exit
 }
 
-while [ 0 ]; do
+while true; do
 	clear
-	echo "*** EFI multiboot menu maker ***
-	
-Available features:
-1 Build and install the multiboot menu on your computer
-2 Make a rescue USB stick providing the boot menu
-3 Customize the boot menu
-4 Information about EFI3M
-
-Just press Enter to quit.
-"
-read -p "Your choice: " CHOICE
+	printf %b "EFI multiboot menu maker (EFI3M)\n\n"
+	printf %b "Available features:\n"
+	printf %b "1 Display features and usage\n"
+	printf %b "2 Install the multiboot menu on your computer\n"
+	printf %b "3 Make a rescue USB stick providing the boot menu\n"
+	printf %b "4 Customize the boot menu\n"
+	printf %b "5 Display the boot menu\n\n"
+	printf %b "Just press Enter to quit.\n\n"
+	printf "Type the number in front of the chosen feature: "
+	read CHOICE
 	case $CHOICE in
-		1) install_on_system_ESP ;;
-		2) install_on_USB_stick ;;
-		3) edit_the_menu ;;
-		4) About_EFI3M ;;
+		1) features ;;
+		2) install_on_system_ESP ;;
+		3) install_on_USB_stick ;;
+		4) edit_the_menu ;;
+		5) display_the_menu ;;
 		*) the_end
 	esac
 done
