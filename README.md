@@ -70,7 +70,10 @@ EFI3M has been tested on Slint, Slackware, Salix, Debian, Ubuntu, Fedora, openSU
 
 It should run in any Linux system including grub version at least 2.02 with x86_64.efi modules and efibootmgr
 
+If yu installed one of the predecessors of EFI3M, possibly named efimenu, remove the files it installed running the script remove_efibootmenu before running EFI3M.
+
 For questions or issues, send en email to the author:
 didier~at~slint~dot~fr.
+or file an issue.
 
 Didier Spaier
