@@ -20,7 +20,7 @@
 #  OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 #  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# Updated on Thu, 12 Jul 2018 00:42:09 +0200
+# Updated on Sun, 15 Jul 2018 17:22:26 +0200
 # Add as "super-fallback" /EFI/startup.nsh if absent?
 # Internationalize.
 # Provide a pre-built EFI image
@@ -51,6 +51,8 @@
 # It can't distinguish with certainty EFI boot loaders from other EFI
 # files, hence can display entries for these pother EFI files in the
 # boot menu.
+# This script has been tested on a machine with an X86_64 architecture
+# and, as is, deals only with the X86_64 EFI applications.
 
 # Permanent files written:
 # An EFI application in the form of PE32+ executable that gives access
@@ -88,6 +90,9 @@
 # BEFORE, AFTER: register the lists of USB sticks resp. before and after
 # the user should have plugged in the one on which to write the PE32+
 # image grub.cfg that will be written in the target ESP
+# ALREADY, ALREADY_SORTED, NEW: used to properly update /var/EFI3M,
+# keeping the exiting customization but updating the partitions' names
+# case occurring and presenting the already registered entries first
 #
 # Commands used by this script are shipped in:
 # coreutils, efibootmgr, efivar, file, grep, gptfdisk, grub-2.02, parted,
@@ -259,7 +264,7 @@ remove_previous_files() {
 		EFIDIR=$(dirname $EFIPATH)
 		if [ ! -d $MOUNTPOINT$EFIDIR ]; then
 			# Don't try to cd to a directory that have been removed
-			# from ESP in this machine after a previous installation
+			# from  an ESP listed in /var/EFI3Minstall
 			continue
 		fi
 		( cd $MOUNTPOINT$EFIDIR
@@ -364,12 +369,21 @@ build_boot_loader() {
 			grub_mkimage=$grub2_mkimage
 		fi
 	fi
-	if [ ! "$(echo "$grub_mkimage"|wc -l)" = "1" ]; then
-		grub_mkimage=$(echo $grub_mkimage|sed -n 1p)
-	fi
+	# Some distributions like Fedora put the same binary file in two
+	# locations. Pick the first that we find.
+	grub_mkimage=$(echo $grub_mkimage|sed "s/ .*//")
 	GRUB_VERSION=$($(basename $grub_mkimage) -V | sed "s/.* //g")
+	# Fedora pretends that its grub 2.202 is at version 2.03...  
 	if ! echo $GRUB_VERSION | grep -q "2.0[2|3|4]"; then
 		echo "GRUB version at least 2.02 is required but version $GRUB_VERSION is installed."
+		printf "Press Enter to quit. "
+		read dummy
+		the_end
+	fi
+	# Some distributions don't ship the x86_64-efi grub modules by
+	# defaut, like Fedora, or at all, like Solus.
+	if [ ! -d /usr/lib64/grub/x86_64-efi ] && [ ! -d /usr/lib/grub/x86_64-efi ] ; then
+		echo "The x86_64 GRUB modules are required but not found."
 		printf "Press Enter to quit. "
 		read dummy
 		the_end
@@ -538,8 +552,9 @@ make_boot_menu() {
 	# the path will be written in the firmware menu boot entry.
 	list_the_ESP
 	ALREADY=$TMP/ALREADY
+	ALREADY_SORTED=$TMP/ALREADY_SORTED
 	NEW=$TMP/NEW
-	touch $ALREADY $NEW
+	touch $ALREADY $ALREADY_SORTED $NEW
 	#
 	# We successively mount each ESP to find the boot loaders, and
 	# (re)build the menu accordingly.
@@ -566,16 +581,29 @@ make_boot_menu() {
 		# They lie in the "fallback" directory /EFI/BOOT
 		# They lie in /EFI/tools.
 		for EFIPATH in $EFIPATHS; do
-			EFIAPP=$(file $MOUNTPOINT$EFIPATH|grep 'PE32+ executable'|grep 'EFI application')
+			EFIAPP=$(file $MOUNTPOINT$EFIPATH|grep 'PE32+ executable'|grep 'EFI application'|grep 'x86-64')
 			FALLBACK=$(echo $MOUNTPOINT$EFIPATH|grep -i /EFI/BOOT)
 			TOOLS=$(echo $MOUNTPOINT$EFIPATH|grep -i /EFI/tools)
 			# REFIND=$(echo $MOUNTPOINT$EFIPATH|grep -i /efi/refind/refind_x64.efi)
-			INCLUDE="n"
-			if [ ! "$EFIAPP" = "" ] || [ ! "$FALLBACK" = "" ] || [ ! "$TOOLS" = "" ]; then
-				INCLUDE="y"
-			fi
-			if [ "$INCLUDE" = "n" ]; then
+			if [ "$EFIAPP" = "" ]; then
 				continue
+			fi 
+			# Don't include our own OS loader, wherever it be found
+			if echo $MOUNTPOINT$EFIPATH|grep -q /EFI/EFI3M; then
+				continue
+			fi
+			if echo $MOUNTPOINT$EFIPATH|grep -q /EFI/BOOT/BOOTx64.EFI; then
+				CONTINUE=n
+				( cd $(dirname $MOUNTPOINT$EFIPATH)
+				if [ -f EFI3M.md5 ]; then
+					if md5sum -c --quiet EFI3M.md5; then
+						rm BOOTx64.EFI
+						rm EFI3M.md5
+						CONTINUE=y
+					fi
+				fi
+				)
+				[ "$CONTINUE" = "y" ] && continue
 			fi
 			# /var/EFI3M stores a menu with customized labels
 			# in lines formatted this way:
@@ -600,15 +628,7 @@ make_boot_menu() {
 					LINE="$NAME $UUID $EFIPATH LABEL=defaultscheme"
 					echo "$LINE" >> $NEW
 				else CHOICE="$(echo $LINE|sed "s/.*LABEL=//")"
-					if [ "$CHOICE" = "hidden" ]; then
-						echo "$LINE" >> $ALREADY
-						continue
-					elif [ ! "$CHOICE" = "defaultscheme" ];then
-						LABEL=$CHOICE
-						echo "$LINE" >> $ALREADY
-					else
-						echo "$LINE" >> $ALREADY
-					fi
+					echo "$NAME $UUID $EFIPATH LABEL=$CHOICE" >> $ALREADY
 				fi
 			else
 				LINE="$NAME $UUID $EFIPATH LABEL=defaultscheme"
@@ -620,38 +640,16 @@ make_boot_menu() {
 			umount $MNT
 		fi
 	done < $ESPLIST
-	# update /var/EFI3M
-	# We will first write in /var/EFI3M the lines previously and still
-	# there then the new ones. This is to avoid changing the order of
-	# the boot entries possibly set by the user.
-	# We exclude entries previously installed by us.
+	# Put the lines in $ALREADY in the same order as in /var/EFI3M
 	if [ -f /var/EFI3M ]; then
-		mv /var/EFI3M /var/EFI3M.orig
-		while read NAME UUID EFIPATH LABEL; do
-			if [ ! -f /var/EFI3Minstall ]; then
-				INSTALLED=""
-			else
-				INSTALLED=$(grep $UUID /var/EFI3Minstall|grep $EFIPATH)
-			fi
-			if [ "$INSTALLED" = "" ]; then
-				echo "$NAME $UUID $EFIPATH $LABEL" >> /var/EFI3M
-			fi
-		done < /var/EFI3M.orig
-	fi
-	while read NAME UUID EFIPATH LABEL; do
-		if [ ! -f /var/EFI3Minstall ]; then
-			INSTALLED=""
-		else
-			INSTALLED=$(grep $UUID /var/EFI3Minstall|grep $EFIPATH)
+		while read name uuid efipath label; do
+		if grep "$uuid" /var/EFI3M|grep -q $efipath; then
+			echo "$name $uuid $efipath $label" >> $ALREADY_SORTED
 		fi
-		if [ "$INSTALLED" = "" ]; then
-			echo "$NAME $UUID $EFIPATH $LABEL" >> /var/EFI3M
-		fi
-	done < $NEW
-	rm $ALREADY $NEW
-	if [ -f /var/EFI3M.orig ]; then
-		rm /var/EFI3M.orig
+		done < $ALREADY
 	fi
+	cat $ALREADY_SORTED $NEW > /var/EFI3M
+	rm $ALREADY $ALREADY_SORTED $NEW
 }
 
 install_on_system_ESP() {
@@ -661,8 +659,7 @@ install_on_system_ESP() {
 	# Output one line per ESP with these fields:
 	# name parttype uuid pkname
 	# pkname is the name of the device (parent of the partition)
-	remove_previous_files efibootmenu
-	remove_previous_files EFI3M
+	remove_previous_files
 	make_boot_menu
 	write_grub_config_file
 	build_boot_loader
@@ -899,8 +896,8 @@ while true; do
 	printf %b "H to Hide this boot entry,\n"
 	printf %b "D to use the Default Label\n"
 	printf %b "or the new label (5 to 60 characters, spaces allowed but not quotes)."
-	printf %b "\n\nJust press Enter to accept the current setting.\n"
-	printf %b "\nPlease type the new label or the letter D or H now: "
+	printf %b "\nJust press Enter to go back to the Customize menu.\n"
+	printf %b "\nType the new label or D or H or press Enter directly: "
 	read LABEL
 	[ "$LABEL" = "" ] && rm $LINE && return
 	if [ "$(to_lower "$LABEL")" = "h" ]; then
