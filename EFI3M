@@ -374,7 +374,7 @@ build_boot_loader() {
 	grub_mkimage=$(echo $grub_mkimage|sed "s/ .*//")
 	GRUB_VERSION=$($(basename $grub_mkimage) -V | sed "s/.* //g")
 	# Fedora pretends that its grub 2.202 is at version 2.03...  
-	if ! echo $GRUB_VERSION | grep -q "2.0[2|3|4]"; then
+	if ! echo $GRUB_VERSION | grep -q "2.[02|03|04|06|12|13]"; then
 		echo "GRUB version at least 2.02 is required but version $GRUB_VERSION is installed."
 		printf "Press Enter to quit. "
 		read dummy
